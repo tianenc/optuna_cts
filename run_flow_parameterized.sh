@@ -35,7 +35,7 @@ fi
 cd "$WA_NAME/run/" || exit
 
 # --- Create Bob Run ---
-bob create --gui -s pnr --verbose debug --var "$VAR_FILE" --run_dir "$RUN_NAME" --block "$BLOCK_NAME"
+bob create -s pnr --verbose debug --var "$VAR_FILE" --run_dir "$RUN_NAME" --block "$BLOCK_NAME"
 
 # --- Symbolic Link Logic (PNR) ---
 # Constructing paths based on parameters

@@ -66,35 +66,52 @@ def filter_cells_by_criteria(full_cell_list, vt_choice, min_drive, max_drive):
     return selected_cells
 
 
-def parse_clock_log(log_path):
-    """Parses clock.log for Max Latency and Skew."""
-    if not os.path.exists(log_path):
-        print(f"Error: Log file not found at {log_path}")
-        return None, None
-
-    print(f"Parsing log: {log_path}")
+def parse_clock_log(filepath):
+    """
+    Parses a single clock.log file to extract Max ID (Latency) and Skew.
+    Tracks the maximum skew found to avoid grabbing 'early' corners or minor groups.
+    Returns a tuple (max_latency, skew) or None if not found.
+    """
+    max_skew_found = -1.0
+    associated_latency = -1.0
+    found_valid_data = False
     
-    inside_table = False
-    max_latency = None
-    skew = None
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                # Identify the row by checking for key identifiers
+                if "ssgnp_" in line and "CLK/" in line:
+                    parts = line.split()
+                    try:
+                        # Find exactly where the data starts to handle timestamps robustly
+                        base_idx = next(i for i, part in enumerate(parts) if part.startswith("ssgnp_"))
+                        
+                        # base_idx + 0 = Half-corner
+                        # base_idx + 1 = Skew Group
+                        # base_idx + 2 = Min ID
+                        # base_idx + 3 = Max ID (Latency)
+                        # base_idx + 4 = Skew
+                        
+                        max_latency = float(parts[base_idx + 3])
+                        skew = float(parts[base_idx + 4])
+                        
+                        # Keep the maximum skew found across all corners/groups
+                        if skew > max_skew_found:
+                            max_skew_found = skew
+                            associated_latency = max_latency
+                            found_valid_data = True
+                            
+                    except (IndexError, ValueError, StopIteration):
+                        continue
+                        
+        if found_valid_data:
+            return associated_latency, max_skew_found
+            
+    except Exception as e:
+        print(f"  [!] Error reading {filepath}: {e}")
+        
+    return None
 
-    table_start_pattern = re.compile(r"Primary reporting skew groups summary")
-    data_pattern = re.compile(r"DEBUG:\s+\S+:\S+\s+\S+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)")
-
-    with open(log_path, 'r') as f:
-        for line in f:
-            if table_start_pattern.search(line):
-                inside_table = True
-                continue
-            if inside_table:
-                match = data_pattern.search(line)
-                if match:
-                    max_latency = float(match.group(1))
-                    skew = float(match.group(2))
-                    return max_latency, skew
-                if "-----" in line and "Half-corner" not in line: 
-                    pass
-    return None, None
 
 
 optuna.logging.set_verbosity(optuna.logging.INFO)
