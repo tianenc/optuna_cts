@@ -125,7 +125,7 @@ def objective(trial):
     trial_num = trial.number
     
     # --- Optuna Suggestions ---
-    vt_choice = trial.suggest_categorical('vt_type', ['ULVTLL', 'LVTLL', 'LVT', 'SVT'])
+    vt_choice = trial.suggest_categorical('vt_type', ['ULVTLL'])
     min_drive = trial.suggest_int('min_drive_strength', 1, 8)
     max_drive = trial.suggest_int('max_drive_strength', min_drive, 16)
     
