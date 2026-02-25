@@ -75,6 +75,9 @@ echo "INFO: Waiting 5 seconds for scheduler initialization..."
 sleep 5
 
 # --- Polling Loop ---
+INVALID_RETRIES=0
+MAX_INVALID_RETRIES=5
+
 while true; do
   echo "--- Polling Job Status ($RUN_NAME) ---"
   all_statuses=$(bob info -r "$RUN_NAME" -O '@JOBNAME@ @STATUS@' | grep -v "#")
@@ -97,11 +100,29 @@ while true; do
   prereq_statuses=$(echo "$all_statuses" | awk '$1 == "pnr/libgen" || $1 == "pnr/setup" || $1 == "pnr/floorplan" || $1 == "pnr/placeopt"')
   num_invalid=$(echo "$prereq_statuses" | grep -c "INVALID")
   
-  if [ "$num_invalid" -gt 0 ]; then
-    echo "INFO: $num_invalid prerequisite(s) became INVALID. Re-validating..."
+  # =========================================================================
+  # THE CATCHING CONDITION: Handle INVALID clock or prerequisites
+  # =========================================================================
+  if [ "$clock_status" == "INVALID" ] || [ "$num_invalid" -gt 0 ]; then
+    if [ "$INVALID_RETRIES" -ge "$MAX_INVALID_RETRIES" ]; then
+      echo "ERROR: pnr/clock keeps reverting to INVALID. Halting to prevent infinite loop."
+      echo "       Please check file permissions on your symlinks!"
+      exit 1
+    fi
+    
+    echo "WARNING: pnr/clock or its prerequisites became INVALID! (Retry $((INVALID_RETRIES+1))/$MAX_INVALID_RETRIES)"
+    echo "INFO: Re-validating upstream prerequisites..."
     bob update status -f -i -b "$BLOCK_NAME" -r "$RUN_NAME" --force_validate $PREREQ_NODES
+    
+    echo "INFO: Re-submitting pnr/clock to the queue..."
+    bob run -r "$RUN_NAME" --node pnr/clock --force
+    
+    ((INVALID_RETRIES++))
+    sleep 5
+    continue
   fi
+  # =========================================================================
   
-  echo "INFO: pnr/clock status is '$clock_status'. Sleeping 15s..."
-  sleep 15
+  echo "INFO: pnr/clock status is '$clock_status'. Sleeping 300s (5 minutes)..."
+  sleep 300
 done
