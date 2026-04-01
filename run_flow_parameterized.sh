@@ -1,128 +1,101 @@
 #!/bin/bash
+# Consolidated Flow Execution Script for CTS Trials
+# Handles workspace setup via symlinks and submits Bob jobs.
 
-# --- Check for five arguments ---
+# --- ANSI Color Codes ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_err()  { echo -e "${RED}[ERROR]${NC} $1"; }
+log_succ() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+
+# --- Argument Validation ---
 if [ "$#" -ne 5 ]; then
-  echo "Error: Missing arguments."
+  log_err "Missing arguments."
   echo "Usage: $0 <run_name> <var_file> <wa_name> <block_name> <source_dir_base>"
-  echo ""
-  echo "Example:"
-  echo "  $0 run1 vars.tcl my_wa_01 my_block /path/to/source/parent"
   exit 1
 fi
 
-# --- Assign arguments to variables ---
 RUN_NAME=$1
 VAR_FILE=$2
 WA_NAME=$3
 BLOCK_NAME=$4
-SOURCE_DIR_BASE=$5  # This should be the path up to /main/
+SOURCE_DIR_BASE=$5
 
 # --- Environment Setup ---
+log_info "Setting up environment..."
 module purge
-module load internal/bob
-module load linux/slurm
+module load internal/bob linux/slurm > /dev/null 2>&1
 source /usr/local/google/gcpu/tools/altair/flowtracer/vov/2021.2.0/common/etc/vovrc.sh
 
-# --- Workspace Navigation ---
-# Uncomment the clone line if your flow requires a fresh clone each time
-# bob wa clone --from $SOURCE_DIR_BASE/../ --to $WA_NAME
-
 if [ ! -d "$WA_NAME" ]; then
-  echo "Error: Workspace directory $WA_NAME not found."
+  log_err "Workspace directory $WA_NAME not found."
   exit 1
 fi
 
 cd "$WA_NAME/run/" || exit
 
 # --- Create Bob Run ---
-bob create -s pnr --verbose debug --var "$VAR_FILE" --run_dir "$RUN_NAME" --block "$BLOCK_NAME"
+log_info "Creating Bob run: $RUN_NAME"
+bob create -s pnr --var "$VAR_FILE" --run_dir "$RUN_NAME" --block "$BLOCK_NAME" --verbose info
 
-# --- Symbolic Link Logic (PNR) ---
-# Constructing paths based on parameters
+# --- Symbolic Link Logic ---
 PNR_SOURCE="${SOURCE_DIR_BASE}/pnr"
 PNR_DEST="${RUN_NAME}/main/pnr"
-
 DIRS_TO_LINK_PNR=( "setup" "placeopt" "libgen" "floorplan" )
 
-echo "INFO: Setting up PNR symbolic links in $PNR_DEST..."
+log_info "Linking PNR prerequisites..."
 for dir in "${DIRS_TO_LINK_PNR[@]}"; do
-  echo "  - Linking ${PNR_DEST}/${dir} -> ${PNR_SOURCE}/${dir}"
   rm -rf "${PNR_DEST}/${dir}"
-  ln -s "${PNR_SOURCE}/${dir}" "${PNR_DEST}/${dir}"
+  ln -s "${PNR_SOURCE}/${dir}" "${PN_DEST}/${dir}"
 done
 
-# --- Symbolic Link Logic (SYN) ---
-SYN_SOURCE="${SOURCE_DIR_BASE}"
-SYN_DEST="${RUN_NAME}/main"
+log_info "Linking SYN prerequisites..."
+ln -sfv "${SOURCE_DIR_BASE}/syn" "${RUN_NAME}/main/syn" > /dev/null
 
-DIRS_TO_LINK_SYN=( "syn" )
-
-echo "INFO: Setting up SYN symbolic links in $SYN_DEST..."
-for dir in "${DIRS_TO_LINK_SYN[@]}"; do
-  ln -sfv "$SYN_SOURCE/$dir" "${SYN_DEST}/${dir}"
-done
-
-# --- Re-validation and Run ---
-echo "INFO: Performing initial force-validation for block: $BLOCK_NAME"
+# --- Execution & Polling ---
+log_info "Force-validating upstream nodes..."
 PREREQ_NODES="pnr/libgen pnr/setup pnr/floorplan pnr/placeopt"
-
 bob update status -f -i -b "$BLOCK_NAME" -r "$RUN_NAME" --force_validate $PREREQ_NODES
 
-echo "INFO: Submitting 'bob run' for pnr/clock..."
+log_info "Submitting job: pnr/clock"
 bob run -r "$RUN_NAME" --node pnr/clock
 
-echo "INFO: Waiting 5 seconds for scheduler initialization..."
-sleep 5
-
-# --- Polling Loop ---
-INVALID_RETRIES=0
-MAX_INVALID_RETRIES=5
+# Polling Loop
+MAX_RETRIES=5
+RETRY_COUNT=0
 
 while true; do
-  echo "--- Polling Job Status ($RUN_NAME) ---"
-  all_statuses=$(bob info -r "$RUN_NAME" -O '@JOBNAME@ @STATUS@' | grep -v "#")
+  status=$(bob info -r "$RUN_NAME" -O '@JOBNAME@ @STATUS@' | grep "pnr/clock" | awk '{print $2}' | tr -d '[:space:]')
   
-  # Get exact status of the target node
-  clock_status=$(echo "$all_statuses" | awk -v node="pnr/clock" '$1 == node {print $2}' | tr -d '[:space:]')
-
-  if [ "$clock_status" == "VALID" ]; then
-    echo "INFO: pnr/clock is VALID. Process complete."
-    break
-  fi
-  
-  if [ "$clock_status" == "FAILED" ]; then
-    echo "ERROR: The pnr/clock job FAILED."
-    bob info -r "$RUN_NAME" --filter 'status==FAILED'
-    exit 1
-  fi
-
-  # Check if prerequisites were invalidated by the tool
-  prereq_statuses=$(echo "$all_statuses" | awk '$1 == "pnr/libgen" || $1 == "pnr/setup" || $1 == "pnr/floorplan" || $1 == "pnr/placeopt"')
-  num_invalid=$(echo "$prereq_statuses" | grep -c "INVALID")
-  
-  # =========================================================================
-  # THE CATCHING CONDITION: Handle INVALID clock or prerequisites
-  # =========================================================================
-  if [ "$clock_status" == "INVALID" ] || [ "$num_invalid" -gt 0 ]; then
-    if [ "$INVALID_RETRIES" -ge "$MAX_INVALID_RETRIES" ]; then
-      echo "ERROR: pnr/clock keeps reverting to INVALID. Halting to prevent infinite loop."
-      echo "       Please check file permissions on your symlinks!"
+  case "$status" in
+    VALID)
+      log_succ "Job pnr/clock completed successfully."
+      exit 0
+      ;;
+    FAILED)
+      log_err "Job pnr/clock FAILED."
       exit 1
-    fi
-    
-    echo "WARNING: pnr/clock or its prerequisites became INVALID! (Retry $((INVALID_RETRIES+1))/$MAX_INVALID_RETRIES)"
-    echo "INFO: Re-validating upstream prerequisites..."
-    bob update status -f -i -b "$BLOCK_NAME" -r "$RUN_NAME" --force_validate $PREREQ_NODES
-    
-    echo "INFO: Re-submitting pnr/clock to the queue..."
-    bob run -r "$RUN_NAME" --node pnr/clock --force
-    
-    ((INVALID_RETRIES++))
-    sleep 5
-    continue
-  fi
-  # =========================================================================
-  
-  echo "INFO: pnr/clock status is '$clock_status'. Sleeping 300s (5 minutes)..."
-  sleep 300
+      ;;
+    INVALID)
+      ((RETRY_COUNT++))
+      if [ "$RETRY_COUNT" -gt "$MAX_RETRIES" ]; then
+        log_err "Job keeps reverting to INVALID. Aborting."
+        exit 1
+      fi
+      log_warn "Job INVALID (Retry $RETRY_COUNT/$MAX_RETRIES). Re-submitting..."
+      bob update status -f -i -b "$BLOCK_NAME" -r "$RUN_NAME" --force_validate $PREREQ_NODES
+      bob run -r "$RUN_NAME" --node pnr/clock --force
+      sleep 10
+      ;;
+    *)
+      log_info "pnr/clock status: $status. Waiting 5 minutes..."
+      sleep 300
+      ;;
+  esac
 done

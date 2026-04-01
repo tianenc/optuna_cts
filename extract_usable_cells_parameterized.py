@@ -1,129 +1,110 @@
+#!/usr/bin/env python3
+"""
+Extract usable buffers and inverters from a clock.log file.
+Useful for pre-filtering cell lists for CTS optimization.
+"""
+
+import argparse
+import logging
 import os
 import re
 import sys
-import argparse
+from typing import List, Set, Tuple
 
-def extract_cells_from_log(log_path):
+# --- Logging Configuration ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+def extract_cells_from_log(log_path: str) -> Tuple[List[str], List[str]]:
     """
-    Parses the clock.log file to extract the full list of usable buffers and inverters.
-    Removes duplicates and handles log prefixes.
+    Parses a clock.log file to extract the full list of usable buffers and inverters.
     """
     if not os.path.exists(log_path):
-        print(f"FATAL ERROR: Source log file not found at '{log_path}'")
+        logger.error(f"Source log file not found: {log_path}")
         sys.exit(1)
         
-    print(f"Extracting usable cells from: {log_path}")
+    logger.info(f"Extracting usable cells from: {log_path}")
     
-    buffers = set()
-    inverters = set()
+    buffers: Set[str] = set()
+    inverters: Set[str] = set()
     
-    # Regex to match log prefixes (e.g., "2026-01-27 14:12:02:DEBUG: ") to strip them
+    # Strip log prefixes (e.g., timestamps)
     prefix_pattern = re.compile(r'^[\d-]+\s+[\d:]+:\w+:\s*')
     
-    # State tracking: None, 'buffers', 'inverters'
     current_mode = None 
-    
-    # Words/Phrases that indicate the end of the list or should be ignored
-    stop_phrases = ["Total number of", "List of unusable", "unusable buffers", "unusable inverters"]
-    garbage_words = {"List", "Total", "number", "of", "usable", "unusable", "buffers:", "inverters:", "buffers", "inverters"}
+    stop_phrases = ["Total number of", "List of unusable"]
+    garbage = {"List", "Total", "number", "of", "usable", "unusable", "buffers:", "inverters:", "buffers", "inverters"}
 
     with open(log_path, 'r') as f:
         for line in f:
-            # Strip the timestamp/debug prefix
             clean_line = prefix_pattern.sub('', line).strip()
             
-            # Check for Headers and switch mode
+            # Identify current list
             if "List of usable buffers:" in clean_line:
                 current_mode = 'buffers'
-                # Extract cells on the same line as the header
                 parts = clean_line.split("List of usable buffers:")
                 if len(parts) > 1:
-                    raw_cells = parts[1].split()
-                    valid_cells = [c for c in raw_cells if c and c[0].isalpha() and c not in garbage_words]
-                    buffers.update(valid_cells)
+                    cells = [c for c in parts[1].split() if c and c[0].isalpha() and c not in garbage]
+                    buffers.update(cells)
                 continue
-                
             elif "List of usable inverters:" in clean_line:
                 current_mode = 'inverters'
                 parts = clean_line.split("List of usable inverters:")
                 if len(parts) > 1:
-                    raw_cells = parts[1].split()
-                    valid_cells = [c for c in raw_cells if c and c[0].isalpha() and c not in garbage_words]
-                    inverters.update(valid_cells)
+                    cells = [c for c in parts[1].split() if c and c[0].isalpha() and c not in garbage]
+                    inverters.update(cells)
                 continue
             
-            # Handle list continuation or termination
+            # Mode transitions
             if current_mode:
-                # STOP CONDITION 1: Explicit Stop Phrases found in the line
-                if any(phrase in clean_line for phrase in stop_phrases):
+                if any(phrase in clean_line for phrase in stop_phrases) or not clean_line or clean_line[0] in '-=':
                     current_mode = None
                     continue
 
-                # STOP CONDITION 2: Formatting separators
-                if not clean_line or clean_line.startswith('-') or clean_line.startswith('='):
-                    current_mode = None
-                    continue
-                
-                # STOP CONDITION 3: New "List of..." header
-                if "List of usable" in clean_line:
+                cells = [c for c in clean_line.split() if c and c[0].isalpha() and c not in garbage]
+                if not cells:
                     current_mode = None
                     continue
 
-                # Add continuation cells
-                raw_cells = clean_line.split()
-                if raw_cells:
-                    # Filter out purely numeric tokens and known garbage words
-                    valid_cells = [c for c in raw_cells if c and c[0].isalpha() and c not in garbage_words]
-                    
-                    # STOP CONDITION 4: If line has text but NO valid cells, assume it's a footer/junk line
-                    if not valid_cells:
-                        current_mode = None
-                        continue
-
-                    if current_mode == 'buffers':
-                        buffers.update(valid_cells)
-                    elif current_mode == 'inverters':
-                        inverters.update(valid_cells)
+                if current_mode == 'buffers':
+                    buffers.update(cells)
                 else:
-                    current_mode = None
+                    inverters.update(cells)
 
     sorted_buffers = sorted(list(buffers))
     sorted_inverters = sorted(list(inverters))
     
-    print(f"  Found {len(sorted_buffers)} unique buffers.")
-    print(f"  Found {len(sorted_inverters)} unique inverters.")
-    
+    logger.info(f"Found {len(sorted_buffers)} unique buffers and {len(sorted_inverters)} unique inverters.")
     return sorted_buffers, sorted_inverters
 
-def write_list_to_file(cell_list, filename):
+def save_list(cells: List[str], filename: str):
     try:
         with open(filename, 'w') as f:
-            for cell in cell_list:
+            for cell in cells:
                 f.write(f"{cell}\n")
-        print(f"Successfully wrote {len(cell_list)} cells to {filename}")
+        logger.info(f"Wrote {len(cells)} cells to {filename}")
     except IOError as e:
-        print(f"Error writing to {filename}: {e}")
+        logger.error(f"Failed to write to {filename}: {e}")
 
-if __name__ == "__main__":
-    # --- ARGUMENT PARSING ---
-    parser = argparse.ArgumentParser(description="Extract usable buffers and inverters from a clock log file.")
-    
-    # Required positional argument for the log file
-    parser.add_argument("source_log", help="Path to the source clock.log file")
-    
-    # Optional arguments for output files (defaults set to original hardcoded values)
-    parser.add_argument("--buf-out", default="usable_buffers.list", help="Output file for buffers (default: usable_buffers.list)")
-    parser.add_argument("--inv-out", default="usable_inverters.list", help="Output file for inverters (default: usable_inverters.list)")
+def main():
+    parser = argparse.ArgumentParser(description="Extract usable cells from clock.log")
+    parser.add_argument("log", help="Path to clock.log")
+    parser.add_argument("--buf-out", default="usable_buffers.list", help="Buffer list output file")
+    parser.add_argument("--inv-out", default="usable_inverters.list", help="Inverter list output file")
 
     args = parser.parse_args()
 
-    # --- EXECUTION ---
-    buffers, inverters = extract_cells_from_log(args.source_log)
+    bufs, invs = extract_cells_from_log(args.log)
     
-    if not buffers:
-        print("WARNING: No buffers found in log. Check log format.")
-    if not inverters:
-        print("WARNING: No inverters found in log. Check log format.")
+    if not bufs: logger.warning("No buffers extracted.")
+    if not invs: logger.warning("No inverters extracted.")
         
-    write_list_to_file(buffers, args.buf_out)
-    write_list_to_file(inverters, args.inv_out)
+    save_list(bufs, args.buf_out)
+    save_list(invs, args.inv_out)
+
+if __name__ == "__main__":
+    main()

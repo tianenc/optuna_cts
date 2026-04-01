@@ -1,61 +1,71 @@
 # Optuna CTS Optimizer
 
-This project provides a framework for optimizing Clock Tree Synthesis (CTS) parameters using Optuna.
+A toolset for automating the optimization of Clock Tree Synthesis (CTS) parameters using Optuna. This framework helps find the best combination of buffer/inverter VT types and drive strengths to minimize latency while meeting skew constraints.
 
-## 1. Extraction of Usable Cells
+## 🚀 Quick Start
 
-Before running the optimizer, you need to extract the list of usable buffers and inverters from an existing clock log. This ensures that the optimizer only suggests cells that are available in your library and valid for the current design.
-
-Use `extract_usable_cells_parameterized.py` to generate these lists:
+### 1. Extract Usable Cells
+The optimizer needs a list of available cells from your library. Extract them from an existing `clock.log`:
 
 ```bash
-python3 extract_usable_cells_parameterized.py /path/to/your/clock.log --buf-out usable_buffers.list --inv-out usable_inverters.list
+./extract_usable_cells_parameterized.py /path/to/clock.log
 ```
+This generates `usable_buffers.list` and `usable_inverters.list`.
 
-The output files (`usable_buffers.list` and `usable_inverters.list`) are required by the Optuna worker scripts.
+### 2. Run Optimization
+The consolidated `run_optuna_optimizer.py` handles both SQLite (local) and PostgreSQL (shared) backends.
 
-## 2. Running the Flow (`run_flow_parameterized.sh`)
-
-The `run_flow_parameterized.sh` script automates the creation of a Bob run and executes the `pnr/clock` node. 
-
-### Softlinking Working Directories
-For the flow to work correctly without a full workspace clone for every trial, the script softlinks key directories from a "golden" source directory into each trial's run directory.
-
-- **PNR Directories:** `setup`, `placeopt`, `libgen`, `floorplan` are linked from `${SOURCE_DIR_BASE}/pnr` to `${RUN_NAME}/main/pnr`.
-- **SYN Directory:** `syn` is linked from `${SOURCE_DIR_BASE}/syn` to `${RUN_NAME}/main/syn`.
-
-**Note:** Ensure that `SOURCE_DIR_BASE` (passed as the 5th argument) points to the parent directory of `pnr/` and `syn/` in your reference workspace.
-
-Usage:
+**Using SQLite (Default):**
 ```bash
-./run_flow_parameterized.sh <run_name> <var_file> <wa_name> <block_name> <source_dir_base>
+./run_optuna_optimizer.py \
+    --wa-name my_bob_workspace \
+    --base-var design.var \
+    --block-name my_block \
+    --source-dir /path/to/reference/run/main/ \
+    --trials 50
 ```
 
-## 3. Optuna Parallel Optimization (`run_optuna_parallel_ULVT.py`)
-
-The main entry point for parallel optimization is `run_optuna_parallel_ULVT.py`. This script suggests cell selections (VT type and drive strength ranges) and invokes the flow script.
-
-### Arguments
-
-| Argument | Description | Default |
-|----------|-------------|---------|
-| `--wa-name` | The name of the Bob workspace where runs will be created. | `20260114_gcpu_smu_svd_pipe` |
-| `--base-var` | The base `.var` file containing the design's default configuration. | `gcpu_smu_svd_pipe.var` |
-| `--study-name` | The name of the Optuna study (stored in the SQLite DB). | `gcpu_smu_svd_pipe_no_INVD_parallel_v1` |
-| `--run-prefix` | Prefix used for naming trial run directories and generated `.var` files. | `optuna_v1` |
-| `--script-path` | Path to the bash script that executes the flow (e.g., `./run_flow_parameterized.sh`). | `./run_flow.sh` |
-| `--block-name` | The name of the design block. | `gcpu_smu_svd_pipe` |
-| `--source-dir` | The base path to the source/reference directory for softlinking. | `/path/to/source/parent` |
-| `--trials` | Number of trials this worker should execute. | `30` |
-| `--skew-constraint`| The skew constraint (in ns) used to calculate penalties in the objective function. | `0.06` |
-
-Example:
+**Using PostgreSQL:**
 ```bash
-python3 run_optuna_parallel_ULVT.py \
-    --wa_name my_workspace \
-    --base-var my_design.var \
-    --study-name cts_optimization_v1 \
-    --script-path ./run_flow_parameterized.sh \
-    --source-dir /home/user/ws/source_wa/run/ \
-    --trials 10
+./run_optuna_optimizer.py \
+    --wa-name my_bob_workspace \
+    --base-var design.var \
+    --block-name my_block \
+    --source-dir /path/to/reference/run/main/ \
+    --db-type postgres \
+    --db-host 10.x.x.x \
+    --db-name optuna_db \
+    --db-user optuna_user \
+    --db-pass my_password
 ```
+
+## 🛠️ Tool Components
+
+### `run_optuna_optimizer.py`
+The main driver. It:
+1. Suggests VT types and drive strength ranges via Optuna.
+2. Filters cells based on suggestions.
+3. Generates trial-specific `.var` files.
+4. Invokes the flow script.
+5. Parses `clock.log` to calculate the objective (Latency + Skew Penalty).
+
+### `run_flow_parameterized.sh`
+The execution wrapper for Bob. It:
+- Sets up the environment and Bob run.
+- **Critical:** Uses symbolic links for prerequisites (`setup`, `placeopt`, `libgen`, `floorplan`, `syn`) to avoid full workspace clones, saving massive disk space and time.
+- Polls the job status and handles intermittent "INVALID" states.
+
+### `extract_usable_cells_parameterized.py`
+A utility to parse `clock.log` and generate the required cell list files.
+
+## 📊 Configuration
+
+| Argument | Description |
+|----------|-------------|
+| `--vts` | List of VT types to explore (e.g., `--vts ULVT LVT SVT`). |
+| `--skew-limit`| Maximum allowable skew (ns). Violations add a heavy penalty to the objective. |
+| `--trials` | Number of trials to run in this process. |
+| `--run-prefix`| Prefix for naming trial directories (e.g., `opt_v2`). |
+
+---
+*Note: Ensure you have the `optuna` and `psycopg2` (for Postgres) Python packages installed.*
