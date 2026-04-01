@@ -8,19 +8,12 @@ import urllib.parse
 # CONFIGURATION
 # ==========================================
 
-# Database connection parameters
-db_user = "optuna"
-raw_password = "NbUQ*BP+RtT;3oAX" 
-db_password = urllib.parse.quote_plus(raw_password)
-db_host = "10.44.0.72"
-db_port = "5432"
-db_name = "test_db" 
 
-STORAGE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-STUDY_NAME = "gcpu_smu_svd_pipe_v1"
+STORAGE_URL = "sqlite:///gcpu_lcu_v5_study.db"
+STUDY_NAME = "gcpu_lcu_v5"
 
 # Directory containing your trial logs
-LOGS_BASE_DIR = "/usr/local/google/gcpu/prj-cad/tianenc/gcpu_smu_svd_pipe_parameterized/optuna_cts/20251111_gcpu_smu_svd_pipe/run" 
+LOGS_BASE_DIR = "/google/gchips/workspace/sycamore/cbf/user/tianenc/lcu_optimizer/optuna_cts/lcu/run"
 LOG_FILENAME = "clock.log"
 
 # ==========================================
@@ -114,7 +107,7 @@ def main():
     # 2. Extract Data from Log Files
     for trial_num in trials:
         # Formulate the path to match the specified directory structure
-        trial_folder = f"gcpu_smu_svd_pipe_v1_trial_{trial_num}"
+        trial_folder = f"gcpu_lcu_v5_trial_{trial_num}"
         log_path = os.path.join(LOGS_BASE_DIR, trial_folder, "main", "pnr", "clock", "logs", LOG_FILENAME)
         
         if os.path.exists(log_path):
@@ -161,7 +154,7 @@ def main():
     ax2.set_ylabel('Max Skew', color=color_skew, fontsize=12, fontweight='bold')
     line2, = ax2.plot(plot_trials, plot_skews, marker='^', linestyle='--', color=color_skew, linewidth=2, label='Max Skew (Log)')
     # Add Skew Baseline
-    line_base_skew = ax2.axhline(y=0.06, color=color_skew, linestyle=':', linewidth=2, alpha=0.6, label='Skew Baseline (0.06)')
+    line_base_skew = ax2.axhline(y=0.108, color=color_skew, linestyle=':', linewidth=2, alpha=0.6, label='Skew Baseline (0.108)')
     
     ax2.tick_params(axis='y', labelcolor=color_skew)
     ax2.grid(True, linestyle=':', alpha=0.7)
@@ -171,7 +164,7 @@ def main():
     ax3.set_ylabel('Max Latency', color=color_lat, fontsize=12, fontweight='bold')
     line3, = ax3.plot(plot_trials, plot_latencies, marker='s', linestyle='-', color=color_lat, linewidth=2, label='Max Latency (Log)')
     # Add Latency Baseline
-    line_base_lat = ax3.axhline(y=0.105, color=color_lat, linestyle=':', linewidth=2, alpha=0.6, label='Latency Baseline (0.105)')
+    line_base_lat = ax3.axhline(y=0.204, color=color_lat, linestyle=':', linewidth=2, alpha=0.6, label='Latency Baseline (0.204)')
     
     ax3.tick_params(axis='y', labelcolor=color_lat)
 
